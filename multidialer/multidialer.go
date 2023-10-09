@@ -13,7 +13,10 @@ package multidialer
 
 import (
 	"context"
+	"log"
 	"net"
+	"os"
+	"strconv"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
@@ -27,6 +30,36 @@ type DialFunc func(ctx context.Context, network, address string) (net.Conn, erro
 type Dialer struct {
 	dial     DialFunc
 	resolver *resolver
+}
+
+const (
+	EnvRandom          = "MULTI_DIALER_RANDOM"
+	EnvRefreshInterval = "MULTI_DIALER_REFRESH_INTERVAL"
+)
+
+var (
+	random          bool
+	refreshInterval int64
+)
+
+func init() {
+	var err error
+	if raw := os.Getenv(EnvRandom); raw != "" {
+		random, err = strconv.ParseBool(raw)
+		if err != nil {
+			log.Panicf("Error parsing %s: %v", EnvRandom, err)
+		}
+	} else {
+		random = false
+	}
+	if raw := os.Getenv(EnvRefreshInterval); raw != "" {
+		refreshInterval, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			log.Panicf("Error parsing %s: %v", EnvRefreshInterval, err)
+		}
+	} else {
+		refreshInterval = 60
+	}
 }
 
 // NewDialer creates a new Dialer instance.
@@ -44,7 +77,7 @@ func NewDialer(dial DialFunc) *Dialer {
 func NewDialerWithAlternateHosts(dial DialFunc, alternateHosts []string) *Dialer {
 	return &Dialer{
 		dial:     dial,
-		resolver: NewResolver(alternateHosts),
+		resolver: NewResolver(alternateHosts, refreshInterval),
 	}
 }
 
@@ -55,7 +88,7 @@ func (d *Dialer) Dial(network, address string) (net.Conn, error) {
 
 // DialContext creates a new connection trying to connect serially over the list of ready hosts in the pool
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	for _, host := range d.resolver.listReady() {
+	for _, host := range d.resolver.listReady(random) {
 		conn, err := d.dial(ctx, network, host)
 		if err == nil {
 			// connection working, record the host

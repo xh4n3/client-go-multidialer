@@ -3,6 +3,7 @@ package multidialer
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -21,11 +22,12 @@ type resolver struct {
 	// try to connect against it.
 	cache map[string]bool
 	// last apiserver connected successfully
-	last string
+	last            string
+	refreshInterval int64
 }
 
 // NewResolver returns a hosts pool to control the dialer destination
-func NewResolver(alternateHosts []string) *resolver {
+func NewResolver(alternateHosts []string, refreshInterval int64) *resolver {
 	hosts := map[string]bool{}
 	if len(alternateHosts) > 0 {
 		for _, h := range alternateHosts {
@@ -33,7 +35,8 @@ func NewResolver(alternateHosts []string) *resolver {
 		}
 	}
 	return &resolver{
-		cache: hosts,
+		cache:           hosts,
+		refreshInterval: refreshInterval,
 	}
 }
 
@@ -55,8 +58,8 @@ func (r *resolver) updateCache(hosts map[string]bool) {
 }
 
 // listReady returns an ordered list only with the hosts that are ready
-// the first host in the list is the last one we successfully connected
-func (r *resolver) listReady() []string {
+// if random is not set, the first host in the list is the last one we successfully connected
+func (r *resolver) listReady(random bool) []string {
 	hosts := []string{}
 	r.mu.Lock()
 	for k, v := range r.cache {
@@ -73,6 +76,9 @@ func (r *resolver) listReady() []string {
 		}
 	}
 	r.mu.Unlock()
+	if random {
+		rand.Shuffle(len(hosts), func(i, j int) { hosts[i], hosts[j] = hosts[j], hosts[i] })
+	}
 	return hosts
 }
 
@@ -85,9 +91,8 @@ func (r *resolver) start(ctx context.Context, clientset kubernetes.Interface) {
 	// this handle cluster resizing and renumbering
 	go func() {
 		// add the list of alternate hosts to the dialer obtained from the apiserver endpoints
-		// TODO: use a custom interval
 		// TODO: use watchers? I feel this is more resilient
-		tick := time.Tick(60 * time.Second)
+		tick := time.Tick(time.Duration(r.refreshInterval) * time.Second)
 		for {
 			select {
 			case <-tick:
