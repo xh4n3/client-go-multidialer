@@ -87,6 +87,8 @@ func (r *resolver) listReady(random bool) []string {
 // This is the tricky part, since the resolver uses the same dialer it feeds
 // so it will benefit from the resilience it provides.
 func (r *resolver) start(ctx context.Context, clientset kubernetes.Interface) {
+	// force update on start
+	r.doUpdate(clientset)
 	// run a goroutine updating the apiserver hosts in the dialer
 	// this handle cluster resizing and renumbering
 	go func() {
@@ -96,25 +98,29 @@ func (r *resolver) start(ctx context.Context, clientset kubernetes.Interface) {
 		for {
 			select {
 			case <-tick:
-				// apiservers are registered as endpoints of the kubernetes.default service
-				endpoint, err := clientset.CoreV1().Endpoints("default").Get(context.TODO(), "kubernetes", metav1.GetOptions{})
-				if err != nil || len(endpoint.Subsets) == 0 {
-					continue
-				}
-				newHosts := map[string]bool{}
-				// get current hosts
-				for _, ss := range endpoint.Subsets {
-					for _, e := range ss.Addresses {
-						host := fmt.Sprintf("%s:%d", e.IP, ss.Ports[0].Port)
-						newHosts[host] = true
-					}
-				}
-				// update the cache with the new hosts
-				r.updateCache(newHosts)
+				r.doUpdate(clientset)
 			case <-ctx.Done():
 				return
 			}
 
 		}
 	}()
+}
+
+func (r *resolver) doUpdate(clientset kubernetes.Interface) {
+	// apiservers are registered as endpoints of the kubernetes.default service
+	endpoint, err := clientset.CoreV1().Endpoints("default").Get(context.TODO(), "kubernetes", metav1.GetOptions{})
+	if err != nil || len(endpoint.Subsets) == 0 {
+		return
+	}
+	newHosts := map[string]bool{}
+	// get current hosts
+	for _, ss := range endpoint.Subsets {
+		for _, e := range ss.Addresses {
+			host := fmt.Sprintf("%s:%d", e.IP, ss.Ports[0].Port)
+			newHosts[host] = true
+		}
+	}
+	// update the cache with the new hosts
+	r.updateCache(newHosts)
 }
